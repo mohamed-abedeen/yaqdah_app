@@ -7,8 +7,8 @@ class DrowsinessLogic {
   static const double _HEAD_PITCH_THRESHOLD = 20.0;
 
   // --- SETTINGS ---
-  static const int _SLEEP_FRAMES = 50; // Increased to 50 as requested
-  static const int _TIME_THRESHOLD_MS = 1500; // 2 Seconds (2000 ms)
+  static const int _SLEEP_FRAMES = 50;
+  static const int _TIME_THRESHOLD_MS = 1500; // 1.5 Seconds (1500 ms)
 
   // --- COUNTERS & TIMERS ---
   int _closedFrames = 0;

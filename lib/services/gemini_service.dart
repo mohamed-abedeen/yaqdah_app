@@ -1,14 +1,14 @@
 import 'package:google_generative_ai/google_generative_ai.dart';
 
 class GeminiService {
-  // ⚠️ REPLACE WITH YOUR ACTUAL API KEY
+
   static const String _apiKey = 'AIzaSyDQS1F6Jd2cq74PFLbob4ondu24ENf_G0w';
 
   late final GenerativeModel _model;
 
   GeminiService() {
     _model = GenerativeModel(
-      model: 'gemini-pro', // FIXED: Switched to 'gemini-pro' to fix "Not Found" error
+      model: 'gemini-pro',
       apiKey: _apiKey,
     );
   }
@@ -36,7 +36,11 @@ class GeminiService {
     } catch (e) {
       print("❌ GEMINI ERROR: $e");
       // If error persists, fallback to static text so the app doesn't break
-      if (state == "ASLEEP") return "استيقظ فوراً!";
+      if (state == "ASLEEP") return "استيقظْ فوراً!";
+
+        else if (state == "DROWSY") return "افتح النافذة قليلا وتوقف على جانب الطريق";
+
+         else if (state == "DISTRACTED") return  "انتبه الى الطريق";
       return "الرجاء الانتباه";
     }
   }
