@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.example.yaqdah_app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973" // <--- THIS FIXES THE VERSION ERROR
+    ndkVersion = "28.2.13676358" // <--- THIS FIXES THE VERSION ERROR
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8

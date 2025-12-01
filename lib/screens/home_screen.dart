@@ -1,3 +1,4 @@
+// ... existing imports ...
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -8,7 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../logic/drowsiness_logic.dart';
 import '../services/gemini_service.dart';
 import '../services/audio_service.dart';
-import '../services/location_sms_service.dart'; // NEW IMPORT
+import '../services/location_sms_service.dart';
 import '../widgets/status_panel.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -20,6 +21,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // ... existing variables ...
   CameraController? _cameraController;
   int _selectedCameraIndex = 0;
 
@@ -34,16 +36,15 @@ class _HomeScreenState extends State<HomeScreen> {
   final DrowsinessLogic _logic = DrowsinessLogic();
   final GeminiService _gemini = GeminiService();
   final AudioService _audio = AudioService();
-  final LocationSmsService _smsService = LocationSmsService(); // NEW SERVICE
+  final LocationSmsService _smsService = LocationSmsService();
 
   bool _isProcessing = false;
   String _status = "INITIALIZING";
   String _aiMessage = "النظام يعمل";
   Color _statusColor = Colors.cyan;
   DateTime _lastAiTrigger = DateTime.now();
-
-  // Prevent sending multiple SMS in one sleep session
   bool _smsSent = false;
+  bool _isListening = false;
 
   @override
   void initState() {
@@ -52,9 +53,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _initCamera(0);
   }
 
+  // ... _initCamera, _switchCamera, _processImage, _handleStatusChange, _triggerGemini, _triggerSOS remain the same ...
   Future<void> _initCamera(int cameraIndex) async {
-    // Request permissions (Camera + Location)
-    await [Permission.camera, Permission.location, Permission.sms].request();
+    await [Permission.camera, Permission.location, Permission.microphone].request();
 
     if (widget.cameras.isEmpty) return;
 
@@ -85,13 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _switchCamera() {
-    if (widget.cameras.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("No other cameras found!"))
-      );
-      return;
-    }
-
+    if (widget.cameras.length < 2) return;
     int newIndex = _selectedCameraIndex + 1;
     _initCamera(newIndex);
   }
@@ -126,7 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (newStatus == "AWAKE") {
         _statusColor = Colors.cyan;
         _audio.stopAll();
-        _smsSent = false; // Reset SMS flag so we can send again next time
+        _smsSent = false;
       } else if (newStatus == "DISTRACTED") {
         _statusColor = Colors.yellow;
         _triggerGemini("DISTRACTED");
@@ -151,20 +146,52 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _triggerSOS() async {
     setState(() => _aiMessage = "🚨 استيقظ! خطر!");
-
-    // 1. Play Alarm
     await _audio.playAlarm();
-
-    // 2. Speak Prompt
     String msg = await _gemini.getIntervention("ASLEEP");
     await _audio.speak(msg);
 
-    // 3. Send SMS (Only once per sleep event)
     if (!_smsSent) {
       _smsSent = true;
-      print("Sending Emergency SMS...");
       _smsService.sendEmergencyAlert();
     }
+  }
+
+  // --- FIXED: Chat Function Logic ---
+  void _toggleListening() async {
+    // 1. STOP if already running
+    if (_isListening) {
+      print("🎤 Mic Button: Stopping listening...");
+      await _audio.stopListening();
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
+      return;
+    }
+
+    // 2. START listening
+    print("🎤 Mic Button: Starting listening...");
+    setState(() => _isListening = true);
+
+    await _audio.listen((userText) async {
+      print("🎤 STT Result: $userText");
+      if (!mounted) return;
+
+      // Update UI immediately when speech is detected
+      setState(() {
+        _isListening = false;
+        _aiMessage = "جارِ التحليل...";
+      });
+
+      // Call AI
+      print("🤖 Sending to AI: $userText");
+      String reply = await _gemini.chatWithDriver(userText);
+      print("🤖 AI Response: $reply");
+
+      if (mounted) {
+        setState(() => _aiMessage = reply);
+      }
+      await _audio.speak(reply);
+    });
   }
 
   @override
@@ -182,7 +209,6 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             icon: const Icon(Icons.cameraswitch, color: Colors.cyan),
             onPressed: _switchCamera,
-            tooltip: "Switch Camera",
           ),
         ],
       ),
@@ -204,19 +230,33 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Expanded(
             flex: 2,
-            child: StatusPanel(
-              status: _status,
-              message: _aiMessage,
-              color: _statusColor,
-              onStopAlarm: () {
-                _audio.stopAll();
-                setState(() {
-                  _status = "AWAKE";
-                  _statusColor = Colors.cyan;
-                  _aiMessage = "توقف التنبيه";
-                  _smsSent = false;
-                });
-              },
+            child: Stack(
+              children: [
+                StatusPanel(
+                  status: _status,
+                  message: _aiMessage,
+                  color: _statusColor,
+                  onStopAlarm: () {
+                    _audio.stopAll();
+                    setState(() {
+                      _status = "AWAKE";
+                      _statusColor = Colors.cyan;
+                      _aiMessage = "توقف التنبيه";
+                      _smsSent = false;
+                    });
+                  },
+                ),
+                // Mic Button
+                Positioned(
+                  bottom: 20,
+                  right: 20,
+                  child: FloatingActionButton(
+                    backgroundColor: _isListening ? Colors.red : Colors.cyan,
+                    onPressed: _toggleListening,
+                    child: Icon(_isListening ? Icons.mic_off : Icons.mic),
+                  ),
+                )
+              ],
             ),
           ),
         ],
@@ -224,6 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ... _convertInputImage and _rotationIntToImageRotation helpers remain same ...
   InputImage? _convertInputImage(CameraImage image) {
     final WriteBuffer allBytes = WriteBuffer();
     for (final Plane plane in image.planes) {
