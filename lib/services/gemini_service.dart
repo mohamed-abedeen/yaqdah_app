@@ -6,11 +6,11 @@ class GeminiService {
 
   late GenerativeModel _model;
 
-  // Track the current model name locally since GenerativeModel doesn't expose it
+
   String _currentModelName = 'gemini-2.5-flash';
 
   GeminiService() {
-    // Start with the standard Flash model
+
     _model = GenerativeModel(
       model: _currentModelName,
       apiKey: _apiKey,
