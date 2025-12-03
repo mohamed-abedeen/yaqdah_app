@@ -2,7 +2,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class LocationSmsService {
-  final String emergencyNumber = "0921215480";
+  final String emergencyNumber = "1415";
 
   /// Get current GPS location
   Future<Position?> _getCurrentLocation() async {
@@ -43,7 +43,7 @@ class LocationSmsService {
       }
 
       // B. Create Message
-      String message = "EMERGENCY: The driver using Yaqdah has fallen asleep! \n"
+      String message = "EMERGENCY: The driver using Yaqdah has fallen asleep while driving! \n"
           "Location: $locationText \n"
           "Map: $mapsLink";
 

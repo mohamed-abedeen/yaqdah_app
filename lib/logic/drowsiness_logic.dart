@@ -13,7 +13,7 @@ class DrowsinessLogic {
   // --- COUNTERS & TIMERS ---
   int _closedFrames = 0;
 
-  // We use timestamps to measure exactly 2 seconds regardless of FPS
+  // We use timestamps to measure exactly 1.5 seconds regardless of FPS
   DateTime? _distractedStartTime;
   DateTime? _drowsyStartTime;
 
