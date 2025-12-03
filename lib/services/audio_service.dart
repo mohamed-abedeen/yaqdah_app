@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -17,7 +18,6 @@ class AudioService {
       await _flutterTts.setPitch(1.0);
       await _flutterTts.setSpeechRate(0.5);
 
-      // Check if language is available
       var isLanguageAvailable = await _flutterTts.isLanguageAvailable("ar");
       print("TTS: Arabic language available: $isLanguageAvailable");
 
@@ -31,7 +31,7 @@ class AudioService {
         );
       }
     } catch (e) {
-      print("TTS Init Error: $e");
+      debugPrint("TTS Init Error: $e");
     }
 
     // 2. Setup STT (Microphone)
@@ -90,6 +90,8 @@ class AudioService {
   // --- Alarm ---
   Future<void> playAlarm() async {
     if (_audioPlayer.state == PlayerState.playing) return;
+
+    // Ensure we are in loop mode for the alarm
     await _audioPlayer.setReleaseMode(ReleaseMode.loop);
     await _audioPlayer.setSource(AssetSource('sounds/alarm.mp3'));
     await _audioPlayer.resume();
@@ -97,7 +99,10 @@ class AudioService {
   }
 
   Future<void> stopAll() async {
+    // Explicitly stop and release the loop mode
     await _audioPlayer.stop();
+    await _audioPlayer.setReleaseMode(ReleaseMode.stop); // <--- ADDED: Reset release mode
+
     await _flutterTts.stop();
     await stopListening();
   }

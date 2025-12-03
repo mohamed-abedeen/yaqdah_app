@@ -1,4 +1,4 @@
-// ... existing imports ...
+import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -10,7 +10,6 @@ import '../logic/drowsiness_logic.dart';
 import '../services/gemini_service.dart';
 import '../services/audio_service.dart';
 import '../services/location_sms_service.dart';
-import '../widgets/status_panel.dart';
 
 class HomeScreen extends StatefulWidget {
   final List<CameraDescription> cameras;
@@ -21,7 +20,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // ... existing variables ...
+  // --- CORE CONTROLLERS ---
   CameraController? _cameraController;
   int _selectedCameraIndex = 0;
 
@@ -38,41 +37,62 @@ class _HomeScreenState extends State<HomeScreen> {
   final AudioService _audio = AudioService();
   final LocationSmsService _smsService = LocationSmsService();
 
+  // --- STATE VARIABLES ---
   bool _isProcessing = false;
-  String _status = "INITIALIZING";
-  String _aiMessage = "النظام يعمل";
-  Color _statusColor = Colors.cyan;
+  bool _isMonitoring = true;
+  bool _showCameraFeed = false;
+
+  // Logic State
+  String _status = "AWAKE";
+  String _aiMessage = "System Active";
   DateTime _lastAiTrigger = DateTime.now();
   bool _smsSent = false;
   bool _isListening = false;
+
+  // UI State
+  int _tripDurationSeconds = 0;
+  Timer? _tripTimer;
+  double _drowsinessLevel = 15.0;
 
   @override
   void initState() {
     super.initState();
     _audio.init();
     _initCamera(0);
+    _startTripTimer();
   }
 
-  // ... _initCamera, _switchCamera, _processImage, _handleStatusChange, _triggerGemini, _triggerSOS remain the same ...
+  void _startTripTimer() {
+    _tripTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_isMonitoring) {
+        setState(() {
+          _tripDurationSeconds++;
+        });
+      }
+    });
+  }
+
+  String _formatTime(int totalSeconds) {
+    int hours = totalSeconds ~/ 3600;
+    int minutes = (totalSeconds % 3600) ~/ 60;
+    int seconds = totalSeconds % 60;
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
   Future<void> _initCamera(int cameraIndex) async {
     await [Permission.camera, Permission.location, Permission.microphone].request();
-
     if (widget.cameras.isEmpty) return;
 
     if (cameraIndex >= widget.cameras.length) cameraIndex = 0;
     _selectedCameraIndex = cameraIndex;
 
-    if (_cameraController != null) {
-      await _cameraController!.dispose();
-    }
+    if (_cameraController != null) await _cameraController!.dispose();
 
     _cameraController = CameraController(
       widget.cameras[cameraIndex],
       ResolutionPreset.medium,
       enableAudio: false,
-      imageFormatGroup: Platform.isAndroid
-          ? ImageFormatGroup.nv21
-          : ImageFormatGroup.bgra8888,
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
 
     try {
@@ -81,18 +101,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _cameraController!.startImageStream(_processImage);
       setState(() {});
     } catch (e) {
-      print("Camera connection error: $e");
+      print("Camera Error: $e");
     }
   }
 
   void _switchCamera() {
     if (widget.cameras.length < 2) return;
-    int newIndex = _selectedCameraIndex + 1;
-    _initCamera(newIndex);
+    _initCamera(_selectedCameraIndex + 1);
   }
 
   void _processImage(CameraImage image) async {
-    if (_isProcessing) return;
+    if (_isProcessing || !_isMonitoring) return;
     _isProcessing = true;
 
     try {
@@ -101,7 +120,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _isProcessing = false;
         return;
       }
-
       final faces = await _faceDetector.processImage(inputImage);
       if (faces.isNotEmpty) {
         String newStatus = _logic.checkFace(faces.first);
@@ -118,19 +136,24 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _status = newStatus;
 
-      if (newStatus == "AWAKE") {
-        _statusColor = Colors.cyan;
-        _audio.stopAll();
-        _smsSent = false;
-      } else if (newStatus == "DISTRACTED") {
-        _statusColor = Colors.yellow;
-        _triggerGemini("DISTRACTED");
-      } else if (newStatus == "DROWSY") {
-        _statusColor = Colors.orange;
-        _triggerGemini("DROWSY");
-      } else if (newStatus == "ASLEEP") {
-        _statusColor = Colors.red;
-        _triggerSOS();
+      switch (newStatus) {
+        case "AWAKE":
+          _drowsinessLevel = 15;
+          _audio.stopAll();
+          _smsSent = false;
+          break;
+        case "DISTRACTED":
+          _drowsinessLevel = 45;
+          _triggerGemini("DISTRACTED");
+          break;
+        case "DROWSY":
+          _drowsinessLevel = 75;
+          _triggerGemini("DROWSY");
+          break;
+        case "ASLEEP":
+          _drowsinessLevel = 95;
+          _triggerSOS(); // Automatic trigger
+          break;
       }
     });
   }
@@ -138,125 +161,343 @@ class _HomeScreenState extends State<HomeScreen> {
   void _triggerGemini(String state) async {
     if (DateTime.now().difference(_lastAiTrigger).inSeconds < 5) return;
     _lastAiTrigger = DateTime.now();
-
     String msg = await _gemini.getIntervention(state);
     setState(() => _aiMessage = msg);
     await _audio.speak(msg);
   }
 
+  // --- AUTOMATIC SOS (When Asleep) ---
   void _triggerSOS() async {
-    setState(() => _aiMessage = "🚨 استيقظ! خطر!");
+    // 1. Play Alarm immediately
     await _audio.playAlarm();
-    String msg = await _gemini.getIntervention("ASLEEP");
-    await _audio.speak(msg);
 
+    // 2. Send SMS immediately (Don't wait for AI)
     if (!_smsSent) {
       _smsSent = true;
       _smsService.sendEmergencyAlert();
     }
+
+    // 3. Then get AI Voice
+    String msg = await _gemini.getIntervention("ASLEEP");
+    await _audio.speak(msg);
   }
 
-  // --- FIXED: Chat Function Logic ---
-  void _toggleListening() async {
-    // 1. STOP if already running
-    if (_isListening) {
-      print("🎤 Mic Button: Stopping listening...");
-      await _audio.stopListening();
-      if (mounted) {
-        setState(() => _isListening = false);
-      }
-      return;
-    }
+  // --- MANUAL SOS (Button Press) ---
+  void _manualEmergencyTrigger() {
+    // Only send SMS directly. No sound, no waiting.
+    _smsService.sendEmergencyAlert();
 
-    // 2. START listening
-    print("🎤 Mic Button: Starting listening...");
-    setState(() => _isListening = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Emergency Protocol Initiated..."),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 2),
+        )
+    );
+  }
 
-    await _audio.listen((userText) async {
-      print("🎤 STT Result: $userText");
-      if (!mounted) return;
+  Color _getStatusColor() {
+    if (_drowsinessLevel < 30) return Colors.green;
+    if (_drowsinessLevel < 60) return Colors.amber;
+    return Colors.red;
+  }
 
-      // Update UI immediately when speech is detected
-      setState(() {
-        _isListening = false;
-        _aiMessage = "جارِ التحليل...";
-      });
-
-      // Call AI
-      print("🤖 Sending to AI: $userText");
-      String reply = await _gemini.chatWithDriver(userText);
-      print("🤖 AI Response: $reply");
-
-      if (mounted) {
-        setState(() => _aiMessage = reply);
-      }
-      await _audio.speak(reply);
-    });
+  String _getStatusText() {
+    if (_drowsinessLevel < 30) return "Alert";
+    if (_drowsinessLevel < 60) return "Moderate";
+    return "Drowsy";
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator()));
+    Color statusColor = _getStatusColor();
+    double aspectRatio = 16 / 9;
+    if (_cameraController != null && _cameraController!.value.isInitialized) {
+      aspectRatio = _cameraController!.value.aspectRatio;
     }
 
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title: const Text("Yaqdah Test Mode", style: TextStyle(color: Colors.white)),
+        title: const Text("Yaqdah Dashboard", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.cameraswitch, color: Colors.cyan),
+            icon: Icon(_showCameraFeed ? Icons.videocam_off : Icons.videocam, color: Colors.white),
+            onPressed: () => setState(() => _showCameraFeed = !_showCameraFeed),
+            tooltip: "Toggle Camera View",
+          ),
+          IconButton(
+            icon: const Icon(Icons.cameraswitch, color: Colors.blueAccent),
             onPressed: _switchCamera,
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            flex: 3,
-            child: Container(
-              margin: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: _statusColor, width: 3),
+          // 1. Camera Feed
+          if (_cameraController != null && _cameraController!.value.isInitialized)
+            Positioned(
+              top: 0, left: 0, right: 0,
+              height: _showCameraFeed ? 300 : 1,
+              child: Opacity(
+                opacity: _showCameraFeed ? 1.0 : 0.0,
+                child: ClipRect(
+                  child: OverflowBox(
+                    alignment: Alignment.center,
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: MediaQuery.of(context).size.width,
+                        height: MediaQuery.of(context).size.width * aspectRatio,
+                        child: CameraPreview(_cameraController!),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(17),
-                child: CameraPreview(_cameraController!),
+            ),
+
+          // 2. Dashboard
+          Positioned.fill(
+            top: _showCameraFeed ? 300 : 0,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+
+                  // Status Card
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: Colors.white.withOpacity(0.1)),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text("Current Trip", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: _isMonitoring ? Colors.green.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: _isMonitoring ? Colors.green : Colors.grey),
+                              ),
+                              child: Text(
+                                _isMonitoring ? "Monitoring" : "Paused",
+                                style: TextStyle(color: _isMonitoring ? Colors.green : Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.remove_red_eye, color: statusColor, size: 20),
+                                const SizedBox(width: 8),
+                                Text("Status: ${_status}", style: const TextStyle(color: Colors.white)),
+                              ],
+                            ),
+                            Text("${_drowsinessLevel.toInt()}%", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: LinearProgressIndicator(
+                            value: _drowsinessLevel / 100,
+                            backgroundColor: Colors.grey[800],
+                            valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+                            minHeight: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(color: Colors.blue[700], borderRadius: BorderRadius.circular(12)),
+                                    child: const Icon(Icons.access_time, color: Colors.white, size: 20),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text("Duration", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                                      Text(_formatTime(_tripDurationSeconds), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                    ],
+                                  )
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(color: Colors.purple[700], borderRadius: BorderRadius.circular(12)),
+                                    child: const Icon(Icons.speed, color: Colors.white, size: 20),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text("AI Message", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                                      SizedBox(
+                                        width: 80,
+                                        child: Text(
+                                            _aiMessage,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                ],
+                              ),
+                            ),
+                          ],
+                        )
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  if (_drowsinessLevel > 50)
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: Colors.red.withOpacity(0.3)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text("Alert: $_status", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                Text(_aiMessage, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                              ],
+                            ),
+                          )
+                        ],
+                      ),
+                    ),
+
+                  if (_drowsinessLevel > 50) const SizedBox(height: 16),
+
+                  // Map Preview
+                  Container(
+                    height: 200,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[900],
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: Colors.white.withOpacity(0.1)),
+                    ),
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.map, size: 50, color: Colors.blue),
+                              SizedBox(height: 8),
+                              Text("Map View", style: TextStyle(color: Colors.white)),
+                              Text("Current: Highway 15", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 16, left: 16,
+                          child: _glassBadge(Icons.navigation, "To: Tripoli", Colors.blue),
+                        ),
+                        Positioned(
+                          bottom: 16, right: 16,
+                          child: _glassBadge(Icons.timer, "ETA: 2h 35m", Colors.white),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Actions
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _isMonitoring = !_isMonitoring),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 20),
+                            decoration: BoxDecoration(
+                              color: Colors.blue[700],
+                              borderRadius: BorderRadius.circular(20),
+                              boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 4))],
+                            ),
+                            child: Column(
+                              children: [
+                                Icon(_isMonitoring ? Icons.pause_circle_outline : Icons.play_circle_outline, color: Colors.white, size: 28),
+                                const SizedBox(height: 8),
+                                Text(_isMonitoring ? "Pause" : "Resume", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: _manualEmergencyTrigger, // FIXED: Now calls the direct silent SMS function
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 20),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(colors: [Colors.red, Colors.orange]),
+                              borderRadius: BorderRadius.circular(20),
+                              boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 4))],
+                            ),
+                            child: Column(
+                              children: const [
+                                Icon(Icons.emergency_share, color: Colors.white, size: 28),
+                                SizedBox(height: 8),
+                                Text("Emergency", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-          Expanded(
-            flex: 2,
-            child: Stack(
-              children: [
-                StatusPanel(
-                  status: _status,
-                  message: _aiMessage,
-                  color: _statusColor,
-                  onStopAlarm: () {
-                    _audio.stopAll();
-                    setState(() {
-                      _status = "AWAKE";
-                      _statusColor = Colors.cyan;
-                      _aiMessage = "توقف التنبيه";
-                      _smsSent = false;
-                    });
-                  },
-                ),
-                // Mic Button
-                Positioned(
-                  bottom: 20,
-                  right: 20,
-                  child: FloatingActionButton(
-                    backgroundColor: _isListening ? Colors.red : Colors.cyan,
-                    onPressed: _toggleListening,
-                    child: Icon(_isListening ? Icons.mic_off : Icons.mic),
-                  ),
-                )
-              ],
+
+          Positioned(
+            bottom: 20,
+            right: 20,
+            child: FloatingActionButton(
+              backgroundColor: _isListening ? Colors.red : Colors.blueAccent,
+              onPressed: _toggleListening,
+              child: Icon(_isListening ? Icons.mic_off : Icons.mic),
             ),
           ),
         ],
@@ -264,25 +505,50 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ... _convertInputImage and _rotationIntToImageRotation helpers remain same ...
+  Widget _glassBadge(IconData icon, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  void _toggleListening() async {
+    if (_isListening) {
+      await _audio.stopListening();
+      if (mounted) setState(() => _isListening = false);
+      return;
+    }
+    setState(() => _isListening = true);
+    await _audio.listen((userText) async {
+      if (!mounted) return;
+      setState(() { _isListening = false; _aiMessage = "Analyzing..."; });
+      String reply = await _gemini.chatWithDriver(userText);
+      await _audio.speak(reply);
+    });
+  }
+
   InputImage? _convertInputImage(CameraImage image) {
     final WriteBuffer allBytes = WriteBuffer();
-    for (final Plane plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
+    for (final Plane plane in image.planes) allBytes.putUint8List(plane.bytes);
     final bytes = allBytes.done().buffer.asUint8List();
     final imageSize = Size(image.width.toDouble(), image.height.toDouble());
     final imageRotation = _rotationIntToImageRotation(_cameraController!.description.sensorOrientation);
     final inputImageFormat = InputImageFormatValue.fromRawValue(image.format.raw);
     if (inputImageFormat == null) return null;
-
-    final metadata = InputImageMetadata(
-      size: imageSize,
-      rotation: imageRotation,
-      format: inputImageFormat,
-      bytesPerRow: image.planes[0].bytesPerRow,
-    );
-    return InputImage.fromBytes(bytes: bytes, metadata: metadata);
+    return InputImage.fromBytes(bytes: bytes, metadata: InputImageMetadata(
+      size: imageSize, rotation: imageRotation, format: inputImageFormat, bytesPerRow: image.planes[0].bytesPerRow,
+    ));
   }
 
   InputImageRotation _rotationIntToImageRotation(int rotation) {
@@ -299,6 +565,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _cameraController?.dispose();
     _faceDetector.close();
     _audio.stopAll();
+    _tripTimer?.cancel();
     super.dispose();
   }
 }
